@@ -297,8 +297,13 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
 
         try:
             if self.use_system_tts and self.is_macos:
-                subprocess.run(['say', text], check=True, capture_output=True, timeout=30)
-                logging.debug("Spoke using macOS 'say' command")
+                subprocess.run(
+                    ['say', '-v', 'Monica', '-r', '180', text],
+                    check=True,
+                    capture_output=True,
+                    timeout=30
+                )
+                logging.debug("Spoke using macOS 'say' command with Spanish voice")
             elif self.tts_engine:
                 self.tts_engine.say(text)
                 self.tts_engine.runAndWait()
@@ -313,7 +318,7 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
             print(f"⚠️  TTS Error: {e}")
             if self.is_macos:
                 try:
-                    subprocess.run(['say', text], check=False, capture_output=True, timeout=10)
+                    subprocess.run(['say', '-v', 'Monica', text], check=False, capture_output=True, timeout=10)
                 except:
                     logging.error("Fallback TTS also failed")
 
