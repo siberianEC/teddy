@@ -22,6 +22,8 @@ import chromadb
 from chromadb.utils import embedding_functions
 import atexit
 import signal
+import torch
+from TTS.api import TTS
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 os.environ['OMP_NUM_THREADS'] = '1'
@@ -45,6 +47,8 @@ class TeddyBearAI:
         self.is_macos = platform.system() == "Darwin"
         self.chroma_client = None
         self.collection = None
+        self.xtts_model = None
+        self.voice_sample_path = "./voice_sample.wav"
 
         atexit.register(self.cleanup)
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -74,6 +78,16 @@ class TeddyBearAI:
         except Exception as e:
             logging.error(f"Failed to load Mistral 7B model: {e}")
             raise
+
+        print("🎤 Cargando modelo XTTS-v2 para clonación de voz...")
+        logging.info("Loading XTTS-v2 model")
+        try:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.xtts_model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+            logging.info(f"XTTS-v2 model loaded successfully on {device}")
+        except Exception as e:
+            logging.warning(f"Failed to load XTTS-v2 model: {e}. Falling back to system TTS.")
+            self.xtts_model = None
 
         print("🔍 Configurando RAG con ChromaDB...")
         logging.info("Setting up ChromaDB")
@@ -298,7 +312,25 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
         logging.info(f"Speaking: {text}")
 
         try:
-            if self.use_system_tts and self.is_macos:
+            if self.xtts_model and os.path.exists(self.voice_sample_path):
+                output_path = "./temp_speech.wav"
+                self.xtts_model.tts_to_file(
+                    text=text,
+                    file_path=output_path,
+                    speaker_wav=self.voice_sample_path,
+                    language="es"
+                )
+
+                from scipy.io import wavfile
+                sample_rate, audio_data = wavfile.read(output_path)
+                sd.play(audio_data, sample_rate)
+                sd.wait()
+
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+
+                logging.debug("Spoke using XTTS-v2 voice cloning")
+            elif self.use_system_tts and self.is_macos:
                 subprocess.run(
                     ['say', '-v', 'Paulina', '-r', '200', text],
                     check=True,
