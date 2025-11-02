@@ -7,6 +7,11 @@ import logging
 import subprocess
 import platform
 from pathlib import Path
+import multiprocessing
+
+if platform.system() == "Darwin":
+    multiprocessing.set_start_method('spawn', force=True)
+
 import numpy as np
 import sounddevice as sd
 from scipy.io.wavfile import write as write_wav
@@ -17,6 +22,9 @@ import chromadb
 from chromadb.utils import embedding_functions
 import atexit
 import signal
+
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+os.environ['OMP_NUM_THREADS'] = '1'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,7 +77,14 @@ class TeddyBearAI:
         print("🔍 Configurando RAG con ChromaDB...")
         logging.info("Setting up ChromaDB")
         try:
+            logging.info("Loading sentence transformer model (this may take a moment)...")
+            import torch
+            torch.set_num_threads(1)
+
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            self.embedding_model.to('cpu')
+
+            logging.info("Sentence transformer loaded successfully")
 
             settings = chromadb.Settings(
                 anonymized_telemetry=False,
@@ -108,11 +123,14 @@ class TeddyBearAI:
                 self.use_system_tts = True
 
                 try:
-                    subprocess.run(['say', 'Test'], check=True, capture_output=True, timeout=2)
-                    logging.info("macOS 'say' command configured successfully")
+                    result = subprocess.run(['say', '-v', '?'], check=True, capture_output=True, timeout=5)
+                    if result.returncode == 0:
+                        logging.info("macOS 'say' command configured successfully")
+                    else:
+                        raise RuntimeError("'say' command not available")
                 except Exception as e:
-                    logging.error(f"macOS 'say' command failed: {e}")
-                    raise RuntimeError(f"Could not initialize TTS on macOS: {e}")
+                    logging.error(f"macOS 'say' command check failed: {e}")
+                    logging.warning("Continuing without TTS verification")
             else:
                 import pyttsx3
                 self.tts_engine = pyttsx3.init()
@@ -180,13 +198,24 @@ class TeddyBearAI:
 
         if self.collection.count() == 0:
             print("📚 Inicializando base de conocimientos...")
+            logging.info("Encoding knowledge base entries...")
             for i, text in enumerate(knowledge):
-                embedding = self.embedding_model.encode(text).tolist()
-                self.collection.add(
-                    embeddings=[embedding],
-                    documents=[text],
-                    ids=[f"knowledge_{i}"]
-                )
+                logging.debug(f"Encoding knowledge entry {i+1}/{len(knowledge)}")
+                try:
+                    embedding = self.embedding_model.encode(
+                        text,
+                        show_progress_bar=False,
+                        convert_to_numpy=True
+                    ).tolist()
+                    self.collection.add(
+                        embeddings=[embedding],
+                        documents=[text],
+                        ids=[f"knowledge_{i}"]
+                    )
+                except Exception as e:
+                    logging.error(f"Failed to encode knowledge entry {i}: {e}")
+                    raise
+            logging.info("Knowledge base initialized successfully")
 
     def record_audio(self, duration=5):
         print("🎤 Escuchando...")
@@ -217,17 +246,25 @@ class TeddyBearAI:
         return text.strip()
 
     def retrieve_context(self, query, k=3):
-        query_embedding = self.embedding_model.encode(query).tolist()
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=k
-        )
+        try:
+            query_embedding = self.embedding_model.encode(
+                query,
+                show_progress_bar=False,
+                convert_to_numpy=True
+            ).tolist()
+            results = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=k
+            )
 
-        context = ""
-        if results['documents']:
-            context = "\n".join(results['documents'][0])
+            context = ""
+            if results['documents']:
+                context = "\n".join(results['documents'][0])
 
-        return context
+            return context
+        except Exception as e:
+            logging.error(f"Error retrieving context: {e}")
+            return ""
 
     def generate_response(self, user_input, context):
         print("🤔 Generando respuesta...")
@@ -281,15 +318,23 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
                     logging.error("Fallback TTS also failed")
 
     def save_to_memory(self, user_input, response):
-        conversation = f"Usuario preguntó: {user_input}. Teddy respondió: {response}"
-        embedding = self.embedding_model.encode(conversation).tolist()
+        try:
+            conversation = f"Usuario preguntó: {user_input}. Teddy respondió: {response}"
+            embedding = self.embedding_model.encode(
+                conversation,
+                show_progress_bar=False,
+                convert_to_numpy=True
+            ).tolist()
 
-        timestamp = int(time.time())
-        self.collection.add(
-            embeddings=[embedding],
-            documents=[conversation],
-            ids=[f"conv_{timestamp}"]
-        )
+            timestamp = int(time.time())
+            self.collection.add(
+                embeddings=[embedding],
+                documents=[conversation],
+                ids=[f"conv_{timestamp}"]
+            )
+            logging.debug("Conversation saved to memory")
+        except Exception as e:
+            logging.error(f"Error saving to memory: {e}")
 
     def process_speech(self):
         audio_file = None

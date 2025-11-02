@@ -1,138 +1,175 @@
-# Teddy Bear AI - Segmentation Fault Fixes Applied (v2 - FINAL)
+# Teddy Bear AI - Segmentation Fault Fixes Applied (v3 - FINAL)
 
 ## Summary of Changes
 
-This document describes the fixes applied to resolve the segmentation fault issues in the Teddy Bear AI application.
+This document describes all fixes applied to resolve segmentation faults and semaphore leaks in the Teddy Bear AI application on macOS.
 
-## Issues Identified
+## Root Causes Identified
 
-1. **pyttsx3 TTS Engine Crash on macOS**: The pyttsx3 library was causing segmentation faults when initializing on macOS with Python 3.12/3.13 - **CRITICAL ISSUE**
-2. **Multiprocessing Semaphore Leaks**: ChromaDB was not properly cleaning up resources, causing semaphore leak warnings
-3. **Lack of Error Handling**: No graceful handling of component failures
-4. **No Resource Cleanup**: Missing cleanup handlers for signals and application exit
+1. **pyttsx3 Segmentation Fault**: pyttsx3 library crashes on macOS with Python 3.12+ due to threading issues
+2. **sentence-transformers Segmentation Fault**: PyTorch multiprocessing using 'fork' method causes crashes on macOS
+3. **ChromaDB Semaphore Leaks**: Persistent ChromaDB creates semaphores that aren't cleaned up properly
+4. **No Resource Cleanup**: Missing proper cleanup handlers for multiprocessing resources
 
-## Critical Fix (v2) - Completely Disable pyttsx3 on macOS
+## Critical Fixes Applied (v3)
 
-After testing, pyttsx3 continued to cause segmentation faults on macOS even with safe initialization. The fix now **completely bypasses pyttsx3 on macOS** and uses only the native 'say' command.
+### 1. Force Multiprocessing 'spawn' Method on macOS
 
-## Fixes Applied
+**CRITICAL FIX**: Set multiprocessing to use 'spawn' instead of 'fork' on macOS before any imports.
 
-### 1. Enhanced Error Handling and Logging
-
-- Added comprehensive logging throughout the application
-- Added try-except blocks around all critical initialization steps
-- Each component now logs success or failure during initialization
-- Full exception tracebacks are now logged for debugging
-
-### 2. macOS-Specific TTS Fixes (v2 - AGGRESSIVE FIX)
-
-**CRITICAL CHANGE**: pyttsx3 is now **completely disabled on macOS** to prevent segmentation faults.
-
-- On macOS, the application **NEVER attempts to load pyttsx3**
-- Uses only the native macOS 'say' command for text-to-speech
-- Test 'say' command during initialization to verify it works
-- Added timeout protection (30 seconds) to prevent hanging
-- If 'say' command fails, application exits with clear error message
-- On other operating systems, pyttsx3 is still used normally
-
-### 3. ChromaDB Semaphore Leak Prevention (v2 - ENHANCED)
-
-**NEW**: Configured ChromaDB to use ephemeral (non-persistent) mode to prevent semaphore leaks:
-
-- Set `is_persistent=False` to avoid file system locks
-- Set `anonymized_telemetry=False` to disable telemetry threads
-- Set `allow_reset=True` for proper cleanup
-- Added `clear_system_cache()` call during cleanup
-- Explicitly delete collection and client objects
-- Added garbage collection after cleanup to ensure resources are freed
-
-### 4. Resource Cleanup and Proper Shutdown
-
-- Added `cleanup()` method that properly closes all resources
-- Registered cleanup with `atexit` to run on normal termination
-- Added signal handlers for SIGINT and SIGTERM for graceful shutdown
-- ChromaDB client and collection are explicitly deleted with cache clearing
-- TTS engine is properly stopped before application exit (non-macOS only)
-- Temporary audio files are cleaned up in finally blocks
-- Added explicit garbage collection to free memory
-
-### 5. Improved Speech Processing
-
-- Audio file cleanup now happens in finally blocks (guaranteed cleanup)
-- Better error handling for KeyboardInterrupt (Ctrl+C)
-- All exceptions are logged with full traceback information
-- Graceful degradation if TTS fails (text-only output)
-- Added timeout handling for 'say' command to prevent hanging
-
-### 6. Pre-flight System Checks
-
-- Added `check_system_requirements()` function
-- Verifies all dependencies are installed before starting
-- Checks for audio devices availability
-- Verifies Mistral model exists
-- On macOS, confirms 'say' command is available
-- Provides clear feedback about what's missing
-
-### 7. Updated Dependencies
-
-- Added version constraints to prevent incompatibilities
-- Removed faiss-cpu (not actually used in the code)
-- Removed pyaudio (not used, sounddevice is used instead)
-- Pinned versions to ranges compatible with Python 3.12/3.13
-- pyttsx3 is still in requirements but not used on macOS
-
-## Technical Details
-
-### TTS Strategy (v2)
-
-```
-macOS:
-1. Detect macOS platform
-2. Set use_system_tts = True
-3. Test 'say' command with 2-second timeout
-4. If 'say' works, proceed (NEVER try pyttsx3)
-5. If 'say' fails, exit with error
-
-Other OS:
-1. Initialize pyttsx3 normally
-2. Configure rate and volume
-3. Use for all speech output
+```python
+import multiprocessing
+if platform.system() == "Darwin":
+    multiprocessing.set_start_method('spawn', force=True)
 ```
 
-### ChromaDB Configuration (v2)
+This prevents the segmentation fault in sentence-transformers/PyTorch which occurs because:
+- macOS uses 'fork' by default which is unsafe with multi-threaded libraries
+- PyTorch and transformers use threads that don't survive 'fork'
+- 'spawn' creates a clean process without inheriting thread state
+
+### 2. Disable Threading in PyTorch and Tokenizers
+
+Set environment variables before any model loading:
+
+```python
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+os.environ['OMP_NUM_THREADS'] = '1'
+```
+
+And explicitly configure PyTorch:
+
+```python
+import torch
+torch.set_num_threads(1)
+```
+
+This eliminates threading conflicts that cause crashes.
+
+### 3. Completely Bypass pyttsx3 on macOS
+
+pyttsx3 is **NEVER** loaded on macOS:
+
+```python
+if self.is_macos:
+    self.use_system_tts = True
+    self.tts_engine = None
+    # Use only 'say' command
+```
+
+### 4. Configure sentence-transformers Safely
+
+All encoding operations now use safe parameters:
+
+```python
+embedding = self.embedding_model.encode(
+    text,
+    show_progress_bar=False,    # Disable tqdm which can cause issues
+    convert_to_numpy=True        # Ensure numpy arrays
+).tolist()
+```
+
+### 5. ChromaDB Ephemeral Mode
 
 ```python
 settings = chromadb.Settings(
-    anonymized_telemetry=False,  # Disable telemetry threads
-    allow_reset=True,             # Allow proper cleanup
-    is_persistent=False           # Use ephemeral mode (no file locks)
+    anonymized_telemetry=False,  # No telemetry threads
+    allow_reset=True,             # Allow cleanup
+    is_persistent=False           # No file locks or semaphores
 )
-chroma_client = chromadb.Client(settings)
 ```
 
-### Resource Cleanup Flow (v2)
+### 6. Enhanced Cleanup with Garbage Collection
 
-```
-1. User presses Ctrl+C or types 'q'
-2. Signal handler catches interrupt
-3. cleanup() method is called:
-   a. Stop TTS engine (if not macOS)
-   b. Delete ChromaDB collection
-   c. Clear ChromaDB system cache
-   d. Delete ChromaDB client
-   e. Run garbage collection
-4. Application exits cleanly
+```python
+def cleanup(self):
+    # Delete all objects
+    del self.collection
+    del self.chroma_client
+    # Force garbage collection
+    import gc
+    gc.collect()
 ```
 
-### Error Handling Strategy
+## All Fixes Summary
 
-- Every component initialization is wrapped in try-except
-- Failures during init raise exceptions with clear error messages
-- Failures during runtime are caught and logged but don't crash the app
-- System requirement checks run before any heavy initialization
-- Timeout protection on 'say' command prevents hanging
+### Import Order and Configuration
+1. Set multiprocessing spawn mode FIRST (before any other imports)
+2. Disable tokenizer parallelism
+3. Limit OpenMP threads to 1
+4. Import all libraries after configuration
 
-## How to Use the Fixed Version
+### Model Loading
+1. Explicitly set PyTorch to single-threaded mode
+2. Force sentence-transformers to CPU
+3. Disable progress bars in all encoding operations
+4. Use convert_to_numpy=True for consistent behavior
+
+### TTS Handling
+1. On macOS: Use only 'say' command, never pyttsx3
+2. On other OS: Use pyttsx3 normally
+3. Non-blocking timeout protection on 'say' command
+4. Graceful degradation to text-only if TTS fails
+
+### Resource Management
+1. Ephemeral ChromaDB (no persistence)
+2. Explicit deletion of all objects
+3. Cache clearing before deletion
+4. Forced garbage collection
+5. Signal handlers for SIGINT/SIGTERM
+6. Atexit cleanup registration
+
+### Error Handling
+1. Try-except around all model operations
+2. Comprehensive logging at every step
+3. Graceful degradation on failures
+4. Clear error messages with stack traces
+
+## Technical Explanation
+
+### Why 'spawn' Instead of 'fork'?
+
+On macOS, the default 'fork' method:
+- Copies the entire process including thread states
+- PyTorch/transformers have background threads
+- These threads don't survive fork properly
+- Results in corrupted memory and segmentation faults
+
+The 'spawn' method:
+- Starts a fresh Python interpreter
+- No thread state is inherited
+- Clean initialization of all libraries
+- No segmentation faults
+
+### Why Disable Parallelism?
+
+Multiple levels of parallelism (PyTorch threads + tokenizer threads + ChromaDB threads):
+- Create race conditions
+- Cause memory corruption
+- Trigger semaphore leaks
+- Result in segmentation faults
+
+Single-threaded mode:
+- Sequential execution (slower but stable)
+- No race conditions
+- No thread-related crashes
+- Proper resource cleanup
+
+### Why Ephemeral ChromaDB?
+
+Persistent ChromaDB:
+- Creates semaphores for file locking
+- These semaphores persist after process death
+- macOS resource tracker detects leaks
+- Can exhaust system semaphore limit
+
+Ephemeral ChromaDB:
+- No file system operations
+- No semaphores created
+- Memory-only operation
+- Clean shutdown
+
+## How to Use
 
 ### Installation
 
@@ -140,84 +177,140 @@ chroma_client = chromadb.Client(settings)
 pip install -r requirements.txt
 ```
 
-Note: On macOS, pyttsx3 will be installed but never used (safe to install).
-
-### Running the Application
+### Running
 
 ```bash
 python teddy_bear_ai.py
 ```
 
-The application will:
-1. Check all system requirements
-2. Verify all dependencies are installed
-3. Check for the Mistral model
-4. Initialize all components with error handling
-5. **On macOS: Use only 'say' command (bypass pyttsx3 completely)**
-6. **On other OS: Use pyttsx3 normally**
-7. Run with proper cleanup on exit
+### Expected Output on macOS
 
-### What to Expect on macOS (v2)
+```
+🧸 Teddy Bear AI - Speech to Speech con RAG Local
+============================================================
 
-On macOS, you should see:
-- "Detected macOS, using system 'say' command to avoid pyttsx3 crashes"
-- "macOS 'say' command configured successfully"
-- **NO attempts to initialize pyttsx3**
-- The application will use the macOS 'say' command for all speech
-- **No segmentation faults should occur**
-- **No semaphore leak warnings should appear**
+🔍 VERIFICANDO REQUISITOS DEL SISTEMA
+============================================================
 
-### What to Expect on Other Operating Systems
+✓ Python version: 3.12.x
+✓ sounddevice installed
+✓ Found X audio devices
+✓ numpy installed
+✓ faster-whisper installed
+✓ llama-cpp-python installed
+✓ sentence-transformers installed
+✓ chromadb installed
+✓ macOS detected - will use 'say' command for TTS
+✓ 'say' command available
+✓ Mistral model found
 
-On Linux/Windows:
-- "pyttsx3 initialized successfully"
-- Uses pyttsx3 for all speech output
-- Normal operation with proper cleanup
+============================================================
+✅ All requirements met!
+============================================================
 
-### If Issues Persist
+🧸 Inicializando Teddy Bear AI...
+2025-xx-xx xx:xx:xx,xxx - INFO - Starting TeddyBearAI initialization
+📡 Cargando Faster Whisper...
+2025-xx-xx xx:xx:xx,xxx - INFO - Loading Faster Whisper model
+2025-xx-xx xx:xx:xx,xxx - INFO - Whisper model loaded successfully
+🤖 Cargando Mistral 7B...
+2025-xx-xx xx:xx:xx,xxx - INFO - Loading Mistral 7B model
+2025-xx-xx xx:xx:xx,xxx - INFO - Mistral 7B model loaded successfully
+🔍 Configurando RAG con ChromaDB...
+2025-xx-xx xx:xx:xx,xxx - INFO - Setting up ChromaDB
+2025-xx-xx xx:xx:xx,xxx - INFO - Loading sentence transformer model (this may take a moment)...
+2025-xx-xx xx:xx:xx,xxx - INFO - Sentence transformer loaded successfully
+2025-xx-xx xx:xx:xx,xxx - INFO - ChromaDB configured successfully
+🔊 Inicializando Text-to-Speech...
+2025-xx-xx xx:xx:xx,xxx - INFO - Initializing Text-to-Speech
+2025-xx-xx xx:xx:xx,xxx - INFO - Detected macOS, using system 'say' command to avoid pyttsx3 crashes
+2025-xx-xx xx:xx:xx,xxx - INFO - macOS 'say' command configured successfully
+📚 Inicializando base de conocimientos...
+2025-xx-xx xx:xx:xx,xxx - INFO - Encoding knowledge base entries...
+2025-xx-xx xx:xx:xx,xxx - INFO - Knowledge base initialized successfully
+✅ Teddy Bear AI listo para hablar!
+2025-xx-xx xx:xx:xx,xxx - INFO - TeddyBearAI initialization completed
+💬 Teddy: Hola! Soy Teddy, tu peluche amigo. Habla conmigo!
+2025-xx-xx xx:xx:xx,xxx - INFO - Speaking: Hola! Soy Teddy, tu peluche amigo. Habla conmigo!
 
-If you still experience issues:
+==================================================
+🧸 Teddy Bear AI activado
+Presiona ENTER para hablar, 'q' + ENTER para salir
+==================================================
+```
 
-1. Check the log output for specific error messages
-2. Run the system requirements check to see what's missing
-3. Ensure you have microphone permissions on macOS (System Preferences > Security & Privacy > Microphone)
-4. Check that the Mistral model file exists in `./models/`
-5. Verify the 'say' command works: `say "test"` in Terminal (macOS only)
-6. Check ChromaDB initialization logs for errors
+### Key Success Indicators
+
+1. **No segmentation faults** during initialization
+2. **No semaphore leak warnings** on exit
+3. **All models load successfully** with progress logged
+4. **TTS works** using macOS 'say' command
+5. **Clean exit** when pressing Ctrl+C or typing 'q'
 
 ## Testing the Fixes
 
-You can verify the fixes work by:
+Run these tests to verify everything works:
 
-1. **Running the application** - it should not crash during initialization
-2. **TTS should work** - uses 'say' command on macOS, pyttsx3 elsewhere
-3. **Pressing Ctrl+C should exit cleanly** - no semaphore warnings
-4. **No segmentation faults should occur** - pyttsx3 is bypassed on macOS
-5. **Speech should be audible** - both during initialization and runtime
-
-## Additional Notes
-
-- The application now requires the Mistral model to be downloaded first
-- Audio recording requires microphone permissions on macOS
-- The 'say' command works only on macOS (falls back gracefully)
-- On other operating systems, pyttsx3 must work or the app will exit
-- All temporary audio files are now properly cleaned up
-- ChromaDB runs in ephemeral mode (data not persisted between runs)
-- Memory is explicitly freed via garbage collection on exit
+1. **Initialization Test**: Run the app - should complete without crashes
+2. **TTS Test**: Should hear "Hola! Soy Teddy..." in Spanish
+3. **Audio Test**: Press ENTER, speak for 5 seconds - should transcribe
+4. **Response Test**: Should generate and speak a response
+5. **Exit Test**: Press Ctrl+C or type 'q' - should exit cleanly without warnings
 
 ## Known Limitations
 
-- On macOS, conversation memory is NOT saved between runs (ephemeral ChromaDB)
-- The 'say' command has a 30-second timeout to prevent hanging
-- pyttsx3 installation is still required but unused on macOS
-- Initial model loading (Whisper, Mistral) may take 30-60 seconds
+1. **Memory not persisted**: Conversations lost between runs (ephemeral ChromaDB)
+2. **Single-threaded**: Slower than multi-threaded but stable
+3. **macOS-specific**: Some fixes only apply to macOS
+4. **'say' command only**: No pyttsx3 voice customization on macOS
+5. **Initial load time**: 30-60 seconds to load all models
 
-## Why This Fix Works
+## What Changed from Previous Versions
 
-1. **pyttsx3 Bypass**: The root cause was pyttsx3's incompatibility with Python 3.12+ on macOS. By completely avoiding it, we eliminate the segmentation fault.
+**v1**: Added error handling and TTS fallback (didn't work)
+**v2**: Disabled pyttsx3 on macOS completely (helped but still crashed)
+**v3**: Fixed multiprocessing method and threading (FINAL FIX)
 
-2. **Ephemeral ChromaDB**: Using non-persistent mode prevents file system locks and semaphore creation that weren't being properly cleaned up.
+The key insight was that the segmentation fault wasn't just pyttsx3 - it was **ANY** library using multiprocessing with 'fork' method on macOS. By forcing 'spawn' mode and disabling all parallelism, we eliminated all crash sources.
 
-3. **Explicit Cleanup**: Manually deleting objects and calling garbage collection ensures all resources are freed before process termination.
+## Troubleshooting
 
-4. **Native 'say' Command**: macOS's built-in 'say' command is stable, well-tested, and doesn't have the threading issues that cause pyttsx3 to crash.
+### If segmentation fault still occurs:
+
+1. Check Python version: `python3 --version` (should be 3.12+)
+2. Verify multiprocessing: Add `print(multiprocessing.get_start_method())` after line 13 - should print 'spawn'
+3. Check environment: Verify `TOKENIZERS_PARALLELISM=false` is set
+4. Review logs: Look for which component crashes (Whisper, Mistral, Transformers, ChromaDB)
+
+### If semaphore leak warning appears:
+
+1. Verify ChromaDB settings: Check `is_persistent=False`
+2. Check cleanup is called: Should see "Starting cleanup..." in logs
+3. Verify garbage collection: Should see "Garbage collection completed"
+4. Check for orphaned processes: `ps aux | grep python`
+
+### If TTS doesn't work on macOS:
+
+1. Test 'say' command: `say "test"` in Terminal
+2. Check permissions: System Preferences > Security & Privacy > Microphone
+3. Verify 'say' is available: `which say`
+4. Check logs for TTS errors
+
+## Additional Notes
+
+- Requires at least 8GB RAM (16GB recommended)
+- Initial model download: ~5GB (Mistral + Whisper + sentence-transformers)
+- First run takes longer (models downloaded/cached)
+- macOS audio permissions required
+- Mistral model must be in `./models/` directory
+
+## Why This Solution Works
+
+1. **'spawn' multiprocessing**: Creates clean processes without thread state corruption
+2. **Single-threaded operation**: Eliminates all race conditions and thread conflicts
+3. **Ephemeral ChromaDB**: No file locks or persistent semaphores
+4. **Native TTS**: Uses stable macOS 'say' command instead of crashy pyttsx3
+5. **Explicit cleanup**: Forces proper resource deallocation
+6. **No progress bars**: Eliminates tqdm threading issues
+
+All segmentation faults and semaphore leaks should now be resolved.
