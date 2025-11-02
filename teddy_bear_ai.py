@@ -70,7 +70,13 @@ class TeddyBearAI:
         logging.info("Setting up ChromaDB")
         try:
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-            self.chroma_client = chromadb.Client()
+
+            settings = chromadb.Settings(
+                anonymized_telemetry=False,
+                allow_reset=True,
+                is_persistent=False
+            )
+            self.chroma_client = chromadb.Client(settings)
 
             try:
                 self.collection = self.chroma_client.get_collection("teddy_memory")
@@ -97,26 +103,16 @@ class TeddyBearAI:
         """Initialize TTS with fallback mechanisms for macOS compatibility"""
         try:
             if self.is_macos:
-                logging.info("Detected macOS, attempting safe pyttsx3 initialization")
+                logging.info("Detected macOS, using system 'say' command to avoid pyttsx3 crashes")
+                self.tts_engine = None
+                self.use_system_tts = True
+
                 try:
-                    import pyttsx3
-                    self.tts_engine = pyttsx3.init(driverName='nsss')
-                    self.tts_engine.setProperty('rate', 150)
-                    self.tts_engine.setProperty('volume', 0.9)
-
-                    test_text = "Test"
-                    self.tts_engine.say(test_text)
-                    self.tts_engine.runAndWait()
-
-                    logging.info("pyttsx3 initialized successfully on macOS")
-                    self.use_system_tts = False
+                    subprocess.run(['say', 'Test'], check=True, capture_output=True, timeout=2)
+                    logging.info("macOS 'say' command configured successfully")
                 except Exception as e:
-                    logging.warning(f"pyttsx3 failed on macOS: {e}. Falling back to system 'say' command")
-                    self.tts_engine = None
-                    self.use_system_tts = True
-
-                    subprocess.run(['say', 'Test'], check=True, capture_output=True)
-                    logging.info("macOS 'say' command configured as fallback")
+                    logging.error(f"macOS 'say' command failed: {e}")
+                    raise RuntimeError(f"Could not initialize TTS on macOS: {e}")
             else:
                 import pyttsx3
                 self.tts_engine = pyttsx3.init()
@@ -147,17 +143,28 @@ class TeddyBearAI:
             if self.tts_engine:
                 try:
                     self.tts_engine.stop()
+                    del self.tts_engine
+                    self.tts_engine = None
                     logging.info("TTS engine stopped")
-                except:
-                    pass
+                except Exception as e:
+                    logging.warning(f"Error stopping TTS: {e}")
 
             if self.chroma_client:
                 try:
-                    del self.collection
+                    if self.collection:
+                        del self.collection
+                        self.collection = None
+
+                    self.chroma_client.clear_system_cache()
                     del self.chroma_client
+                    self.chroma_client = None
                     logging.info("ChromaDB cleaned up")
-                except:
-                    pass
+                except Exception as e:
+                    logging.warning(f"Error cleaning ChromaDB: {e}")
+
+            import gc
+            gc.collect()
+            logging.info("Garbage collection completed")
 
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
@@ -253,7 +260,7 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
 
         try:
             if self.use_system_tts and self.is_macos:
-                subprocess.run(['say', text], check=True, capture_output=True)
+                subprocess.run(['say', text], check=True, capture_output=True, timeout=30)
                 logging.debug("Spoke using macOS 'say' command")
             elif self.tts_engine:
                 self.tts_engine.say(text)
@@ -261,12 +268,15 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
                 logging.debug("Spoke using pyttsx3")
             else:
                 logging.warning("No TTS engine available, text only output")
+        except subprocess.TimeoutExpired:
+            logging.error("TTS 'say' command timed out")
+            print("⚠️  TTS timed out")
         except Exception as e:
             logging.error(f"Error during speech: {e}")
             print(f"⚠️  TTS Error: {e}")
             if self.is_macos:
                 try:
-                    subprocess.run(['say', text], check=False, capture_output=True)
+                    subprocess.run(['say', text], check=False, capture_output=True, timeout=10)
                 except:
                     logging.error("Fallback TTS also failed")
 
