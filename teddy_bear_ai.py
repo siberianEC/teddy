@@ -300,7 +300,7 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
         try:
             if self.use_system_tts and self.is_macos:
                 subprocess.run(
-                    ['say', '-v', 'Monica', '-r', '180', text],
+                    ['say', '-v', 'Paulina', '-r', '200', text],
                     check=True,
                     capture_output=True,
                     timeout=30
@@ -320,7 +320,7 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
             print(f"⚠️  TTS Error: {e}")
             if self.is_macos:
                 try:
-                    subprocess.run(['say', '-v', 'Monica', text], check=False, capture_output=True, timeout=10)
+                    subprocess.run(['say', '-v', 'Paulina', text], check=False, capture_output=True, timeout=10)
                 except:
                     logging.error("Fallback TTS also failed")
 
