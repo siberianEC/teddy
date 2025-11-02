@@ -64,8 +64,9 @@ class TeddyBearAI:
         try:
             self.llm = Llama(
                 model_path="./models/mistral-7b-instruct-v0.2.Q4_K_M.gguf",
-                n_ctx=4096,
-                n_threads=4,
+                n_ctx=2048,
+                n_threads=8,
+                n_batch=512,
                 n_gpu_layers=0,
                 verbose=False
             )
@@ -281,10 +282,11 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
 
         response = self.llm(
             prompt,
-            max_tokens=150,
+            max_tokens=80,
             temperature=0.7,
             top_p=0.9,
-            stop=["</s>", "[INST]"]
+            stop=["</s>", "[INST]"],
+            repeat_penalty=1.1
         )
 
         answer = response['choices'][0]['text'].strip()
