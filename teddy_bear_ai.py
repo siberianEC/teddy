@@ -269,7 +269,7 @@ class TeddyBearAI:
     def generate_response(self, user_input, context):
         print("🤔 Generando respuesta...")
 
-        prompt = f"""<s>[INST] Eres un peluche amigable y cariñoso que habla con niños.
+        prompt = f"""[INST] Eres un peluche amigable y cariñoso que habla con niños.
 Tu nombre es Teddy. Responde de forma corta, amable y divertida.
 
 Contexto de tu memoria:
