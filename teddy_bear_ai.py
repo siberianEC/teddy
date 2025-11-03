@@ -234,6 +234,7 @@ class TeddyBearAI:
 
     def record_audio(self, duration=5):
         print("🎤 Escuchando...")
+        start_time = time.time()
         audio = sd.rec(
             int(duration * self.sample_rate),
             samplerate=self.sample_rate,
@@ -241,6 +242,9 @@ class TeddyBearAI:
             dtype=np.int16
         )
         sd.wait()
+        elapsed = time.time() - start_time
+        print(f"⏱️  Grabación: {elapsed:.2f}s")
+        logging.info(f"Recording time: {elapsed:.2f}s")
         return audio.flatten()
 
     def save_audio_temp(self, audio_data):
@@ -250,6 +254,7 @@ class TeddyBearAI:
 
     def transcribe_audio(self, audio_file):
         print("📝 Transcribiendo...")
+        start_time = time.time()
         segments, info = self.whisper_model.transcribe(
             audio_file,
             language="es",
@@ -258,9 +263,13 @@ class TeddyBearAI:
         )
 
         text = " ".join([segment.text for segment in segments])
+        elapsed = time.time() - start_time
+        print(f"⏱️  Transcripción: {elapsed:.2f}s")
+        logging.info(f"Transcription time: {elapsed:.2f}s")
         return text.strip()
 
     def retrieve_context(self, query, k=3):
+        start_time = time.time()
         try:
             query_embedding = self.embedding_model.encode(
                 query,
@@ -276,6 +285,9 @@ class TeddyBearAI:
             if results['documents']:
                 context = "\n".join(results['documents'][0])
 
+            elapsed = time.time() - start_time
+            print(f"⏱️  Búsqueda RAG: {elapsed:.2f}s")
+            logging.info(f"RAG retrieval time: {elapsed:.2f}s")
             return context
         except Exception as e:
             logging.error(f"Error retrieving context: {e}")
@@ -283,6 +295,7 @@ class TeddyBearAI:
 
     def generate_response(self, user_input, context):
         print("🤔 Generando respuesta...")
+        start_time = time.time()
 
         prompt = f"""[INST] Eres un peluche amigable y cariñoso que habla con niños.
 Tu nombre es Teddy. Responde de forma corta, amable y divertida.
@@ -304,22 +317,29 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
         )
 
         answer = response['choices'][0]['text'].strip()
+        elapsed = time.time() - start_time
+        print(f"⏱️  Generación LLM: {elapsed:.2f}s")
+        logging.info(f"LLM generation time: {elapsed:.2f}s")
         return answer
 
     def speak(self, text):
         """Speak text using TTS with fallback mechanisms"""
         print(f"💬 Teddy: {text}")
+        start_time = time.time()
         logging.info(f"Speaking: {text}")
 
         try:
             if self.xtts_model and os.path.exists(self.voice_sample_path):
                 output_path = "./temp_speech.wav"
+                tts_start = time.time()
                 self.xtts_model.tts_to_file(
                     text=text,
                     file_path=output_path,
                     speaker_wav=self.voice_sample_path,
                     language="es"
                 )
+                tts_elapsed = time.time() - tts_start
+                print(f"⏱️  Síntesis TTS: {tts_elapsed:.2f}s")
 
                 from scipy.io import wavfile
                 sample_rate, audio_data = wavfile.read(output_path)
@@ -344,6 +364,10 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
                 logging.debug("Spoke using pyttsx3")
             else:
                 logging.warning("No TTS engine available, text only output")
+
+            elapsed = time.time() - start_time
+            print(f"⏱️  TTS total: {elapsed:.2f}s")
+            logging.info(f"Total TTS time: {elapsed:.2f}s")
         except subprocess.TimeoutExpired:
             logging.error("TTS 'say' command timed out")
             print("⚠️  TTS timed out")
@@ -377,8 +401,10 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
 
     def process_speech(self):
         audio_file = None
+        total_start = time.time()
         try:
             logging.info("Starting speech processing")
+            print("\n" + "="*50)
             audio_data = self.record_audio(duration=5)
 
             audio_file = self.save_audio_temp(audio_data)
@@ -396,6 +422,11 @@ Responde como un peluche amigable en máximo 2-3 oraciones. [/INST]"""
                 self.speak(response)
 
                 self.save_to_memory(user_text, response)
+
+                total_elapsed = time.time() - total_start
+                print(f"\n⏱️  ⚡ TIEMPO TOTAL: {total_elapsed:.2f}s")
+                print("="*50)
+                logging.info(f"Total processing time: {total_elapsed:.2f}s")
             else:
                 print("❌ No se detectó audio claro")
                 logging.warning("No clear audio detected")
